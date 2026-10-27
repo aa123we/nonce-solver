@@ -1,0 +1,44 @@
+name: solve
+on: workflow_dispatch
+jobs:
+  s:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix: {job: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]}
+    steps:
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install -q python-sat requests
+      - name: solve
+        env:
+          T: nonce-b32bbbd9531ab0b4
+          J: ${{ matrix.job }}
+        run: |
+          cat > s.py <<'PY'
+          import json,os,time,random,requests
+          from multiprocessing import Process,Queue
+          from pysat.solvers import Solver
+          T=os.environ['T'];J=int(os.environ['J']);n=1536;t0=time.time()
+          while True:
+            r=requests.get(f'https://ntfy.sh/{T}-in/json?poll=1&since=10m').text.strip().splitlines()
+            ms=[json.loads(x) for x in r if x and 'attachment' in json.loads(x)]
+            if ms: break
+            if time.time()-t0>1500: raise SystemExit('no puzzle')
+            time.sleep(5)
+          cl=requests.get(ms[-1]['attachment']['url']).json()['clauses'];print('got',len(cl),flush=True)
+          def run(seed,name,q):
+            g=random.Random(seed);p=list(range(1,n+1));g.shuffle(p);f=[g.random()<.5 for _ in range(n+1)]
+            mp={v:p[v-1]*(-1 if f[v] else 1) for v in range(1,n+1)}
+            c2=[[mp[abs(l)] if l>0 else -mp[abs(l)] for l in c] for c in cl];g.shuffle(c2)
+            s=Solver(name=name,bootstrap_with=c2)
+            if s.solve():
+              m=set(s.get_model());a=''.join('1' if mp[v] in m else '0' for v in range(1,n+1))
+              if all(any((l>0)==(a[abs(l)-1]=='1') for l in c) for c in cl): q.put(a)
+          q=Queue();N=['kissat404','cadical195']
+          ps=[Process(target=run,args=(J*100+i,N[(i+J)%2],q),daemon=True) for i in range(4)]
+          [x.start() for x in ps];a=q.get()
+          requests.post(f'https://ntfy.sh/{T}-out',data=f'{J} {a}');print('SOLVED',J,round(time.time()-t0))
+          PY
+          timeout 2300 python s.py
